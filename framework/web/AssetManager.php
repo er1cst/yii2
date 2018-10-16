@@ -525,6 +525,7 @@ class AssetManager extends Component
         $dir = $this->hash($src);
         $dstDir = $this->basePath . DIRECTORY_SEPARATOR . $dir;
         if ($this->linkAssets) {
+	    // is_dir() 在路径所指的对象存在且其类型为目录时，返回 TRUE
             if (!is_dir($dstDir)) {
                 FileHelper::createDirectory(dirname($dstDir), $this->dirMode, true);
                 try { // fix #6226 symlinking multi threaded
@@ -535,6 +536,8 @@ class AssetManager extends Component
                     }
                 }
             }
+	// 如果开启了 forceCopy 或者目录不存在，则进入复制流程
+	// 也就是说，如果文件夹对应的哈希值没有发生变化，且目录存在，是不会进行复制的。
         } elseif (!empty($options['forceCopy']) || ($this->forceCopy && !isset($options['forceCopy'])) || !is_dir($dstDir)) {
             $opts = array_merge(
                 $options,
@@ -544,11 +547,14 @@ class AssetManager extends Component
                     'copyEmptyDirectories' => false,
                 ]
             );
+	    // FileHelper::copyDirectory() 在真正复制目录之前，会检查 $options['beforeCopy'] 并将其视为一个 callable，通过 call_user_func() 调用
+	    // 若返回零值，则跳过（不进行复制）。
             if (!isset($opts['beforeCopy'])) {
                 if ($this->beforeCopy !== null) {
                     $opts['beforeCopy'] = $this->beforeCopy;
                 } else {
                     $opts['beforeCopy'] = function ($from, $to) {
+			// 这里利用 beforeCopy 检查文件或目录是否以"."开头（即隐藏文件）。如果为隐藏文件则跳过（不进行复制）
                         return strncmp(basename($from), '.', 1) !== 0;
                     };
                 }
@@ -607,11 +613,21 @@ class AssetManager extends Component
     /**
      * Generate a CRC32 hash for the directory path. Collisions are higher
      * than MD5 but generates a much smaller hash string.
+     *
+     * 哈希值与下列 4 个因素有关：
+     * - 文件所在路径或目录的路径
+     * - 文件/目录的 mtime
+     * - Yii的版本号
+     * - 是否使用软连接
+     * 也就是说，如果文件发生了改动，生成的哈希值可能会发生变化。
+     *
      * @param string $path string to be hashed.
      * @return string hashed string.
      */
     protected function hash($path)
     {
+	// 如果应用部署在多台主机（容器）上并使用了负载均衡，由于各主机（容器）源文件/目录创建时间不同，生成的哈希值发生变化，进而导致
+	// 用户访问 published assets 时报 404 错误。最简单的方法就是继承一个新的 AssetManager 并定义 $this->hashCallback，使其返回固定值
         if (is_callable($this->hashCallback)) {
             return call_user_func($this->hashCallback, $path);
         }
